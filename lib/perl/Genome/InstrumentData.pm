@@ -425,9 +425,11 @@ sub lane_qc_models {
     # Find the Lane QC models that use this instrument data
     my $instrument_data_id = $self->id;
     my @inputs = Genome::Model::Input->get(value_id => $instrument_data_id);
-    my @lane_qc_models = grep { $_->is_lane_qc }
-                         grep { $_->class eq 'Genome::Model::ReferenceAlignment' }
-                         map  { $_->model } @inputs;
+    my @lane_qc_models =
+        grep { $_->config_profile_items->status eq 'active' }
+            grep { $_->is_lane_qc }
+                grep { $_->class eq 'Genome::Model::ReferenceAlignment' }
+                    map  { $_->model } @inputs;
 
     # Find the Lane QC models that used the default genotype_microarray input
     my $sample = $self->sample;
