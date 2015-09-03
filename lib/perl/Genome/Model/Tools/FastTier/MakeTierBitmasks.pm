@@ -30,6 +30,7 @@ class Genome::Model::Tools::FastTier::MakeTierBitmasks {
             type => 'Text',
             is_input => 1,
             doc => 'The location of phastcons17,28, regulatory regions, etc',
+            is_optional => 1,
         },
         species => {
             type => 'Text',
@@ -65,12 +66,13 @@ sub execute {
 
     my $result = Genome::Model::Tools::FastTier::TierBitmasks->get_or_create(
         reference_sequence_build => $self->reference_sequence_build,
-        annotation_structures => Genome::Db::Ensembl::AnnotationStructures->get_or_create(version => $self->transcript_version,
-               software_version => $self->annotation_import_version,
-               reference_build_id => $self->reference_sequence_build->id,
-               species => $self->species,
-               data_set => 'Core',
-               test_name => (Genome::Config::get('software_result_test_name') || undef),
+        annotation_structures => Genome::Db::Ensembl::AnnotationStructures->get_or_create(
+            version => $self->transcript_version,
+            software_version => $self->annotation_import_version,
+            reference_build_id => $self->reference_sequence_build->id,
+            species => $self->species,
+            data_set => 'Core',
+            test_name => (Genome::Config::get('software_result_test_name') || undef),
         ),
         ucsc_directory => $self->ucsc_directory,
         test_name => (Genome::Config::get('software_result_test_name') || undef),
