@@ -15,12 +15,15 @@ class Genome::Qc::Command::BuildMetrics {
             shell_args_position => 1,
             doc => 'The builds to report QC metrics for.',
         },
-    ],
-    has_optional => [
-        output_file => {
+        merged_metrics_file => {
             is => 'Text',
-            doc => 'The file path to output build QC metrics.',
+            doc => 'The file path to output build merged QC metrics.',
         },
+        read_group_metrics_file => {
+            is => 'Text',
+            doc => 'The file path to output build read group QC metrics.',
+            is_optional => 1,
+        }
     ],
 };
 sub help_brief {
@@ -33,42 +36,57 @@ sub help_synopsis {
 
 sub help_detail{
     return <<"EOS"
-The QC framework stores result metrics in the database for each QC result.  This tool will dump the instrument data QC result metrics for all input builds.  A tab-delimited output of all QC metrics along with build id and instrument data id are output to the terminal.
+The QC framework stores result metrics in the database for each QC result.  This tool will dump the QC result metrics for all input builds.  A tab-delimited output of all QC metrics along with build id and instrument data ids are output to the terminal.
 EOS
 }
 
 sub execute {
     my $self = shift;
 
-    my @metrics;
+    my @merged_metrics;
+    my @read_group_metrics;
 
     for my $build ($self->builds) {
-        push @metrics, $self->metrics_for_build($build);
+        my ($merged_metrics,$read_group_metrics) = $self->metrics_for_build($build);
+        push @merged_metrics, @{$merged_metrics};
+        push @read_group_metrics, @{$read_group_metrics};
     }
 
-    unless (@metrics) {
-        $self->error_message('Failed to find QC results for builds!');
+    unless (@merged_metrics) {
+        $self->error_message('Failed to find merged QC results for builds!');
         die($self->error_message);
     }
 
-    my @headers = List::MoreUtils::uniq(sort map { keys %$_ } @metrics);
+    my @merged_metrics_headers = List::MoreUtils::uniq(sort map { keys %$_ } @merged_metrics);
 
-    my %writer_params = (
+    my $merged_writer = Genome::Utility::IO::SeparatedValueWriter->create(
         separator => "\t",
-        headers => \@headers,
+        headers => \@merged_metrics_headers,
+        output => $self->merged_metrics_file,
     );
 
-    if ($self->output_file) {
-        $writer_params{output} = $self->output_file;
+    for (@merged_metrics) {
+        $merged_writer->write_one($_);
     }
 
-    my $writer = Genome::Utility::IO::SeparatedValueWriter->create(%writer_params);
+    $merged_writer->output->close;
+    if ($self->read_group_metrics_file) {
+        unless (@read_group_metrics) {
+            $self->error_message('Failed to find read group QC results for builds!');
+            die($self->error_message);
+        }
+        my @read_group_metrics_headers = List::MoreUtils::uniq(sort map { keys %$_ } @read_group_metrics);
 
-    for (@metrics) {
-        $writer->write_one($_);
+        my $read_group_writer = Genome::Utility::IO::SeparatedValueWriter->create(
+            separator => "\t",
+            headers => \@read_group_metrics_headers,
+            output => $self->read_group_metrics_file,
+        );
+        for (@read_group_metrics) {
+            $read_group_writer->write_one($_);
+        }
+        $read_group_writer->output->close;
     }
-
-    $writer->output->close;
 
     return 1;
 }
@@ -77,22 +95,40 @@ sub metrics_for_build {
     my $self = shift;
     my $build = shift;
 
-    my @metrics;
+    my @merged_metrics;
+    my @read_group_metrics;
     my @qc_results = grep {$_->isa('Genome::Qc::Result')} $build->results;
     for my $qc_result (@qc_results) {
         my $as = $qc_result->alignment_result;
         my @instrument_data = $as->instrument_data;
-        if (@instrument_data > 1) {
-            $self->error_message('Please add support for merged alignment results and multiple instrument data QC results!');
-            die($self->error_message);
-        }
+        my %instrument_data_ids = map {$_->id => 1} @instrument_data;
+
         my %metrics = $qc_result->get_metrics;
+        my %all_read_group_metrics;
+        for my $key (keys %metrics) {
+            my @metric_key_parts = split('-',$key);
+            if (@metric_key_parts > 1) {
+                my $metric_label = $metric_key_parts[0];
+                my $metric_name = $metric_key_parts[1];
+                if ($instrument_data_ids{$metric_label}) {
+                    my $metric_value = delete($metrics{$key});
+                    $all_read_group_metrics{$metric_label}{$metric_name} = $metric_value;
+                }
+            }
+        }
+        for my $read_group_id (keys %all_read_group_metrics) {
+            my %read_group_metrics = %{$all_read_group_metrics{$read_group_id}};
+            $read_group_metrics{read_group_id} = $read_group_id;
+            $read_group_metrics{build_id} = $build->id;
+            push @read_group_metrics, \%read_group_metrics;
+        }
         $metrics{build_id} = $build->id;
-        $metrics{instrument_data_id} = $instrument_data[0]->id;
-        push @metrics, \%metrics;
+        $metrics{read_groups} = scalar(keys %instrument_data_ids);
+        $metrics{read_group_ids} = join(',',keys %instrument_data_ids);
+        push @merged_metrics, \%metrics;
     }
 
-    return @metrics;
+    return (\@merged_metrics, \@read_group_metrics);
 }
 
 
