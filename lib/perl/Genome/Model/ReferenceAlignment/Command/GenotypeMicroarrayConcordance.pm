@@ -39,21 +39,15 @@ class Genome::Model::ReferenceAlignment::Command::GenotypeMicroarrayConcordance 
         },
     ],
     has_optional =>[
-        microarray_build => {
-            is => 'Genome::Model::Build::GenotypeMicroarray',
-            doc => 'Use this microarray build as the truth VCF regardless of default genotype data for the sample.',
-        },
-        lookup_lane_qc_builds => {
-            is => 'Boolean',
-            doc => 'Lookup the lane QC build for each instrument data assigned to the input reference alignment build.',
-            default_value => 1,
+        genotype_microarray_sample => {
+            is => 'Genome::Sample',
+            doc => 'The sample for which genotype microarray data exists to compare to the sequenced sample.',
         },
         output_dir => {
             is => 'Text',
             doc => 'A directory to output the raw Picard files to.',
         },
         _seqdict => {},
-        _genotype_samples_and_sorted_vcfs => { is => 'HASH', default_value => {}, },
     ],
 };
 
@@ -64,98 +58,27 @@ sub help_detail {
 sub execute {
     my $self = shift;
 
-    my $ref_seq_build = $self->build->reference_sequence_build;
-    my $seqdict = $ref_seq_build->get_sequence_dictionary('sam',$ref_seq_build->species_name,$self->picard_version);
-    $self->_seqdict($seqdict);
+    # The sequence dictionary is required by Picard
+    $self->resolve_sequence_dictionary;
 
-    my $microarray_build;
-    if ($self->microarray_build) {
-        $microarray_build = $self->microarray_build;
-        # Validate the microarray_build refseq matches the refalign refseq
-        if ($microarray_build->reference_sequence_build_id ne $ref_seq_build->id) {
-            $self->error_message('Inconsistent reference sequence builds!');
-            die($self->error_message);
-        }
-    }
+    # The sequence data SNVs VCF from the RefAlign Build
+    my $build_vcf = $self->resolve_snvs_vcf_for_build();
 
-    my @data;
-    for my $build ($self->resolve_builds) {
-        my $build_vcf = $self->resolve_snvs_vcf_for_build($build);
-        # If the input microarray build was not defined, get the microarray_build for each input build
-        unless ($self->microarray_build) {
-            $microarray_build = $build->genotype_microarray_build;
-            unless ($microarray_build) {
-                $self->error_message('Failed to find a Microarray build.  None exists as input to SNVs build.');
-                die($self->error_message);
-            }
-        }
-        my ($microarray_vcf, $genotype_sample) = $self->resolve_genotype_microarray_vcf_and_sample($microarray_build);
+    # Determine the sample to compare genotype microarray data with
+    $self->resolve_genotype_microarray_sample;
 
-        # Without an intersection the PPV is really high.  Presumably caused by many False-Positive SNVs
-        my $intersect_vcf_basename = Genome::Utility::Text::sanitize_string_for_filesystem($genotype_sample->name) .'_x_'. $build->id;
-        my $intersect_vcf = $self->intersect_vcfs($build_vcf,$microarray_vcf,$intersect_vcf_basename);
-        
-        my $output_prefix = $self->create_temp_file_path($build->id);
-        my %gc_params = (
-            truth_vcf => $microarray_vcf,
-            call_vcf => $intersect_vcf,
-            output => $output_prefix,
-            truth_sample => $genotype_sample->name,
-            call_sample => $build->model->subject->name_in_vcf,
-            min_dp => $self->minimum_depth,
-            use_version => $self->picard_version,
-        );
-        # For exome limit to ROI from input build
-        if ($build->model->is_capture) {
-            $gc_params{intervals} = $self->resolve_roi_intervals_from_build($build);
-        }
-        my $gc_cmd = Genome::Model::Tools::Picard::GenotypeConcordance->create(%gc_params);
-        unless ($gc_cmd) {
-            $self->error_message('Failed to create GenotypeConcordance!');
-            die($self->error_message);
-        }
-        unless ($gc_cmd->execute) {
-            $self->error_message('Failed to execute GenotypeConcordance!');
-            die($self->error_message);
-        }
-        my @instrument_data = $build->instrument_data;
-        my $instrument_data_ids = join(',', map {$_->id} @instrument_data);
-        my $flow_cell_ids = join(',', map {$_->flow_cell_id} @instrument_data);
-        my $lanes = join(',', map {$_->lane} @instrument_data);
-        my $clusters = join(',', map {$_->clusters} @instrument_data);
-        my %data = (
-            snvs_build_id => $build->id,
-            instrument_data_id => $instrument_data_ids,
-            sample_name => $build->model->subject->name,
-            microarray_sample_name => $genotype_sample->name,
-            flow_cell_id => $flow_cell_ids,
-            lane => $lanes,
-            clusters => $clusters,
-        );
+    # The microarray genotypes as a VCF file
+    my $microarray_vcf = $self->resolve_genotype_microarray_vcf;
 
-        my $gc_summary_metrics_file = $output_prefix .'.genotype_concordance_summary_metrics';
-        if (-e $gc_summary_metrics_file) {
-            my $gc_summary_metrics_hash_ref = Genome::Model::Tools::Picard->parse_file_into_metrics_hashref($gc_summary_metrics_file, 'VARIANT_TYPE');
-            my $gc_summary_snp_metrics = $gc_summary_metrics_hash_ref->{'SNP'};
-            for my $key ($self->picard_metrics) {
-                $data{$key} = $gc_summary_snp_metrics->{$key};
-            }
-        } else {
-            die('Failed to find GenotypeConcordance summary file: '. $gc_summary_metrics_file);
-        }
-        push @data, \%data;
-    } # for build
+    # Run Picard GenotypeConcordance and return the output prefix
+    my $output_prefix = $self->run_picard_genotype_concordance($build_vcf,$microarray_vcf);
 
-    my @headers = $self->summary_headers;
-    my $writer = Genome::Utility::IO::SeparatedValueWriter->create(
-        separator => "\t",
-        headers => \@headers,
-        in_place_of_null_value => 'na',
-    );
-    for my $data (@data) {
-        $writer->write_one($data);
-    }
-    $writer->output->close;
+    # Parse the output metrics into a hash ref
+    my $data = $self->output_summary_hash_ref($output_prefix);
+
+    # Write the summary Picard GC metrics along with some build summary metrics
+    $self->write_output_summary($data);
+
     return 1;
 }
 
@@ -188,8 +111,8 @@ sub summary_headers {
 
 sub resolve_snvs_vcf_for_build {
     my $self = shift;
-    my $build = shift;
-    
+
+    my $build = $self->build;
     my $build_vcf = $build->get_detailed_snvs_vcf;
     unless (-e $build_vcf) {
         $self->error_message('Unable to find the snvs VCF for build : '. $build->__display_name__);
@@ -198,60 +121,36 @@ sub resolve_snvs_vcf_for_build {
     return $build_vcf;
 }
 
-sub resolve_genotype_microarray_vcf_and_sample {
+sub resolve_genotype_microarray_vcf {
     my $self = shift;
-    my $microarray_build = shift;
-
-    my $genotype_sample = $microarray_build->model->subject;
-    
-    # get the VCF from an existing genotype microarray build if it exists already
-    my $microarray_vcf;
-    if ($microarray_build) {
-        $microarray_vcf = $microarray_build->original_genotype_vcf_file_path;
-        if (-e $microarray_vcf) {
-            $genotype_sample = $microarray_build->model->subject;
-        }
-    }
 
     # Get the sorted VCF file name
-    my $sorted_microarray_vcf = $self->sorted_microarray_vcf_for_genotype_sample($genotype_sample);
-    
-    # Return if this genotype sample has an existing sorted VCF
-    return ($sorted_microarray_vcf, $genotype_sample) if -s $sorted_microarray_vcf;
+    my $sorted_microarray_vcf = $self->sorted_microarray_vcf_for_genotype_microarray_sample();
 
-    # there is no existing microarray build or the VCF does not exist (ie. old genotype build)
+    $self->debug_message('Get or create genotype VCF result for sample: '. $self->genotype_microarray_sample->__display_name__);
+
+    my $vcf_result = Genome::InstrumentData::Microarray::Result::Vcf->get_or_create(
+        sample => $self->genotype_microarray_sample,
+        known_sites_build => $self->dbsnp_build,
+        users => Genome::SoftwareResult::User->user_hash_for_build($self->build),
+    );
+    my $microarray_vcf = $vcf_result->vcf_path;
     unless (-e $microarray_vcf) {
-        $self->debug_message('Get or create genotype VCF result for sample: '. $genotype_sample->__display_name__);
-        
-        my $vcf_result = Genome::InstrumentData::Microarray::Result::Vcf->get_or_create(
-            sample => $genotype_sample,
-            known_sites_build => $self->dbsnp_build,
-            users => Genome::SoftwareResult::User->user_hash_for_build($microarray_build),
-        );
-        $microarray_vcf = $vcf_result->vcf_path;
-        unless (-e $microarray_vcf) {
-            $self->error_message('Failed to get or create microarray VCF for sample: '. $genotype_sample->__display_name__);
-            die($self->error_message);
-        }
+        $self->error_message('Failed to get or create microarray VCF for sample: '. $self->genotype_microarray_sample->__display_name__);
+        die($self->error_message);
     }
     $self->sort_vcf($microarray_vcf,$sorted_microarray_vcf);
-    return ($sorted_microarray_vcf, $genotype_sample);
+    return $sorted_microarray_vcf;
 }
 
-sub sorted_microarray_vcf_for_genotype_sample { 
-    my ($self, $genotype_sample) = Params::Validate::validate_pos(
-        @_, {type => OBJECT, isa => __PACKAGE__}, {type => OBJECT, isa => 'Genome::Sample'},
-    );
+sub sorted_microarray_vcf_for_genotype_microarray_sample {
+    my $self = shift;
 
-    # Check if we have seen this sample, and return the sorted vcf file name
-    my $sorted_microarray_vcf = $self->_genotype_samples_and_sorted_vcfs->{$genotype_sample->id};
-    return $sorted_microarray_vcf if $sorted_microarray_vcf;
-
-    # Create and store the sorted VCF file name for this sample
-    $sorted_microarray_vcf = $self->create_temp_file_path(
-        Genome::Utility::Text::sanitize_string_for_filesystem($genotype_sample->name).'_microarray_sorted.vcf.gz'
-    );
-    $self->_genotype_samples_and_sorted_vcfs->{$genotype_sample->id} = $sorted_microarray_vcf;
+    my $genotype_microarray_sample = $self->genotype_microarray_sample;
+    # Create the sorted VCF file name for this sample
+    my $sorted_microarray_vcf = $self->create_temp_file_path(
+        Genome::Utility::Text::sanitize_string_for_filesystem($genotype_microarray_sample->name).'_microarray_sorted.vcf.gz'
+      );
 
     return $sorted_microarray_vcf;
 }
@@ -292,30 +191,6 @@ sub create_temp_file_path {
     }
 }
 
-sub resolve_builds {
-    my $self = shift;
-
-    my @builds;
-    if ($self->lookup_lane_qc_builds) {
-        my @instrument_data = $self->build->instrument_data;
-        unless (@instrument_data) {
-            $self->error_message('Found no instrument data assigned to build: '. $self->build->__display_name__);
-            die($self->error_message);
-        }
-        for my $instrument_data (@instrument_data) {
-            my $qc_build = $instrument_data->lane_qc_build;
-            unless ($qc_build) {
-                $self->error_message('Failed to find lane qc build for instrument data : '. $instrument_data->__display_name__);
-                die($self->error_message);
-            }
-            push @builds, $qc_build;
-        }
-    } else {
-        push @builds, $self->build;
-    }
-    return @builds;
-}
-
 sub intersect_vcfs {
     my $self = shift;
     my ($a_vcf,$b_vcf,$basename) = @_;
@@ -346,13 +221,12 @@ sub intersect_vcfs {
 
 sub resolve_roi_intervals_from_build {
     my $self = shift;
-    my $build = shift;
+    my $build = $self->build;
     
     my $roi_bed = $self->create_temp_file_path($build->id .'.bed');
     $build->region_of_interest_set_bed_file($roi_bed);
 
     my $roi_intervals = $self->create_temp_file_path($build->id .'.intervals');
-    # TODO: Cache the ROI intervals for later use in this command.  The same ROI is likely used for all input builds.
     my $bed_to_intervals_cmd = Genome::Model::Tools::Picard::BedToIntervalList->create(
         input => $roi_bed,
         output => $roi_intervals,
@@ -368,6 +242,126 @@ sub resolve_roi_intervals_from_build {
         die($self->error_message);
     }
     return $roi_intervals;
+}
+
+sub resolve_genotype_microarray_sample {
+    my $self = shift;
+
+    return 1 if defined($self->genotype_microarray_sample);
+    $self->debug_message('Attempting to resolve the genotype sample from the input RefAlign build: '. $self->build->id);
+
+    my $microarray_build = $self->build->genotype_microarray_build;
+    if ($microarray_build) {
+        my $genotype_microarray_sample = $microarray_build->model->subject;
+        if (defined($genotype_microarray_sample)) {
+            $self->debug_message('Resolved genotype microarray sample from microarray build: '. $genotype_microarray_sample->__display_name__);
+            $self->genotype_microarray_sample($genotype_microarray_sample);
+        } else {
+            $self->error_message('Failed to find the model subject for microarray build '. $microarray_build->id);
+        }
+    } else {
+        my $genotype_microarray_sample = $self->build->model->subject;
+        if (defined($genotype_microarray_sample)) {
+            $self->debug_message('Resolved genotype microarray sample from RefAlign build: '. $genotype_microarray_sample->__display_name__);
+            $self->genotype_microarray_sample($genotype_microarray_sample);
+        } else {
+            $self->error_message('Failed to find the model subject for RefAlign build '. $self->build->id);
+        }
+    }
+    return 1;
+}
+
+sub resolve_sequence_dictionary {
+    my $self = shift;
+
+    my $ref_seq_build = $self->build->reference_sequence_build;
+    my $seqdict = $ref_seq_build->get_sequence_dictionary('sam',$ref_seq_build->species_name,$self->picard_version);
+    $self->_seqdict($seqdict);
+
+    return 1;
+}
+
+sub run_picard_genotype_concordance {
+    my $self = shift;
+    my $build_vcf = shift;
+    my $microarray_vcf = shift;
+    
+    # Without an intersection the PPV is really high.  Presumably caused by many False-Positive SNVs
+    my $intersect_vcf_basename = Genome::Utility::Text::sanitize_string_for_filesystem($self->genotype_microarray_sample->name) .'_x_'. $self->build->id;
+    my $intersect_vcf = $self->intersect_vcfs($build_vcf,$microarray_vcf,$intersect_vcf_basename);
+
+    my $output_prefix = $self->create_temp_file_path($self->build->id);
+    my %gc_params = (
+        truth_vcf => $microarray_vcf,
+        call_vcf => $intersect_vcf,
+        output => $output_prefix,
+        truth_sample => $self->genotype_microarray_sample->name,
+        call_sample => $self->build->model->subject->name_in_vcf,
+        min_dp => $self->minimum_depth,
+        use_version => $self->picard_version,
+    );
+    # For exome limit to ROI from input build
+    if ($self->build->model->is_capture) {
+        $gc_params{intervals} = $self->resolve_roi_intervals_from_build();
+    }
+    my $gc_cmd = Genome::Model::Tools::Picard::GenotypeConcordance->create(%gc_params);
+    unless ($gc_cmd) {
+        $self->error_message('Failed to create GenotypeConcordance!');
+        die($self->error_message);
+    }
+    unless ($gc_cmd->execute) {
+        $self->error_message('Failed to execute GenotypeConcordance!');
+        die($self->error_message);
+    }
+    return $output_prefix;
+}
+
+sub output_summary_hash_ref {
+    my $self = shift;
+    my $output_prefix = shift;
+
+    
+    my @instrument_data = $self->build->instrument_data;
+    my $instrument_data_ids = join(',', map {$_->id} @instrument_data);
+    my $flow_cell_ids = join(',', map {$_->flow_cell_id} @instrument_data);
+    my $lanes = join(',', map {$_->lane} @instrument_data);
+    my $clusters = join(',', map {$_->clusters} @instrument_data);
+    my %data = (
+        snvs_build_id => $self->build->id,
+        instrument_data_id => $instrument_data_ids,
+        sample_name => $self->build->model->subject->name,
+        microarray_sample_name => $self->genotype_microarray_sample->name,
+        flow_cell_id => $flow_cell_ids,
+        lane => $lanes,
+        clusters => $clusters,
+    );
+    
+    my $gc_summary_metrics_file = $output_prefix .'.genotype_concordance_summary_metrics';
+    if (-e $gc_summary_metrics_file) {
+        my $gc_summary_metrics_hash_ref = Genome::Model::Tools::Picard->parse_file_into_metrics_hashref($gc_summary_metrics_file, 'VARIANT_TYPE');
+        my $gc_summary_snp_metrics = $gc_summary_metrics_hash_ref->{'SNP'};
+        for my $key ($self->picard_metrics) {
+            $data{$key} = $gc_summary_snp_metrics->{$key};
+        }
+    } else {
+        die('Failed to find GenotypeConcordance summary file: '. $gc_summary_metrics_file);
+    }
+
+    return \%data;
+}
+
+sub write_output_summary {
+    my $self = shift;
+    my $data = shift;
+    
+    my @headers = $self->summary_headers;
+    my $writer = Genome::Utility::IO::SeparatedValueWriter->create(
+        separator => "\t",
+        headers => \@headers,
+        in_place_of_null_value => 'na',
+    );
+    $writer->write_one($data);
+    $writer->output->close;
 }
 
 1;
