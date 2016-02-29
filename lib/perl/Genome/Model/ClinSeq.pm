@@ -15,8 +15,10 @@ class Genome::Model::ClinSeq {
     is => ['Genome::Model',
            'Genome::Model::ClinSeq::Util',],
     has_optional_input => [
-        wgs_model               => { is => 'Genome::Model::SomaticVariation', doc => 'somatic variation model for wgs data' },
-        exome_model             => { is => 'Genome::Model::SomaticVariation', doc => 'somatic variation model for exome data' },
+        #Should there be a "somtic" base class for SomVal and SomVar?
+        wgs_model               => { is => 'Genome::Model', doc => 'somatic model for wgs data' },
+        exome_model             => { is => 'Genome::Model', doc => 'somatic model for exome data' },
+        
         tumor_rnaseq_model      => { is => 'Genome::Model::RnaSeq', doc => 'rnaseq model for tumor rna-seq data' },
         normal_rnaseq_model     => { is => 'Genome::Model::RnaSeq', doc => 'rnaseq model for normal rna-seq data' },
         de_model                => { is => 'Genome::Model::DifferentialExpression', doc => 'differential-expression for tumor vs normal rna-seq data' },
@@ -50,12 +52,26 @@ class Genome::Model::ClinSeq {
             calculate => q|
               my ($wgs_common_name, $exome_common_name, $tumor_rnaseq_common_name, $normal_rnaseq_common_name, $wgs_name, $exome_name, $tumor_rnaseq_name, $normal_rnaseq_name);
               if ($wgs_model) {
-                  $wgs_common_name = $wgs_model->subject->individual->common_name;
-                  $wgs_name = $wgs_model->subject->individual->name;
+                  my $wgs_model_subject = $wgs_model->subject;
+                  my $wgs_model_individual;
+                  if ($wgs_model_subject->class eq 'Genome::Individual') {
+                      $wgs_model_individual = $wgs_model_subject;
+                  } else {
+                      $wgs_model_individual = $wgs_model->subject->individual;
+                  }
+                  $wgs_common_name = $wgs_model_individual->common_name;
+                  $wgs_name = $wgs_model_individual->name;
               }
               if ($exome_model) {
-                  $exome_common_name = $exome_model->subject->individual->common_name;
-                  $exome_name = $exome_model->subject->individual->name;
+                  my $exome_model_subject = $exome_model->subject;
+                  my $exome_model_individual;
+                  if ($exome_model_subject->class eq 'Genome::Individual') {
+                      $exome_model_individual = $exome_model_subject;
+                  } else {
+                      $exome_model_individual = $exome_model->subject->individual;
+                  }
+                  $exome_common_name = $exome_model_individual->common_name;
+                  $exome_name = $exome_model_individual->name;
               }
               if ($tumor_rnaseq_model) {
                   $tumor_rnaseq_common_name = $tumor_rnaseq_model->subject->individual->common_name;
@@ -1352,14 +1368,14 @@ sub add_dgidb_op_to_flow {
 
 sub _infer_candidate_subjects_from_input_models {
   my $self = shift;
+  
   my %subjects;
-  my @input_models = ( $self->wgs_model, $self->exome_model, $self->tumor_rnaseq_model, $self->normal_rnaseq_model );
-  foreach my $input_model (@input_models){
+  foreach my $input_model ($self->_input_models){
     next unless $input_model;
     my $patient;
     if ($input_model->subject->isa("Genome::Individual")){
       $patient = $input_model->subject;
-    }else {
+    } else {
       $patient = $input_model->subject->individual;
     }
     $subjects{ $patient->id } = $patient;
@@ -1377,14 +1393,9 @@ sub _infer_candidate_subjects_from_input_models {
 
 sub _infer_annotations_from_input_models {
   my $self = shift;
+  
   my %annotations;
-  my @input_models = ( $self->wgs_model, $self->exome_model, $self->tumor_rnaseq_model, $self->normal_rnaseq_model );
-  push (@input_models, $self->wgs_model->normal_model) if  $self->wgs_model;
-  push (@input_models, $self->wgs_model->tumor_model) if  $self->wgs_model;
-  push (@input_models, $self->exome_model->normal_model) if  $self->exome_model;
-  push (@input_models, $self->exome_model->tumor_model) if  $self->exome_model;
-
-  foreach my $input_model (@input_models){
+  foreach my $input_model ($self->_input_models){
     next unless $input_model;
     if ($input_model->can("annotation_build")){
       my $annotation_build = $input_model->annotation_build;
@@ -1401,14 +1412,9 @@ sub _infer_annotations_from_input_models {
 
 sub _infer_references_from_input_models {
   my $self = shift;
+  
   my %references;
-  my @input_models = ( $self->tumor_rnaseq_model, $self->normal_rnaseq_model );
-  push (@input_models, $self->wgs_model->normal_model) if  $self->wgs_model;
-  push (@input_models, $self->wgs_model->tumor_model) if  $self->wgs_model;
-  push (@input_models, $self->exome_model->normal_model) if  $self->exome_model;
-  push (@input_models, $self->exome_model->tumor_model) if  $self->exome_model;
-
-  foreach my $input_model (@input_models){
+  foreach my $input_model ($self->_input_models){
     next unless $input_model;
     if ($input_model->can("reference_sequence_build")){
       my $reference_build = $input_model->reference_sequence_build;
@@ -1419,6 +1425,27 @@ sub _infer_references_from_input_models {
   return @references;
 }
 
+sub _infer_input_models_for_somatic_model {
+    my $self = shift;
+    my $input_models = shift;
+    my $somatic_model = shift;
+
+    if ($somatic_model->class eq 'Genome::Model::SomaticValidation') { return; }
+
+    push (@$input_models, $somatic_model->normal_model);
+    push (@$input_models, $somatic_model->tumor_model);
+}
+
+sub _input_models {
+    my $self = shift;
+    
+    my @input_models = ( $self->wgs_model, $self->exome_model, $self->tumor_rnaseq_model, $self->normal_rnaseq_model );
+
+    $self->_infer_input_models_for_somatic_model(\@input_models,$self->wgs_model) if $self->wgs_model;
+    $self->_infer_input_models_for_somatic_model(\@input_models,$self->exome_model) if $self->exome_model;
+
+    return @input_models;
+}
 
 sub _resolve_resource_requirements_for_build {
   #Set LSF parameters for the ClinSeq job
@@ -1569,14 +1596,15 @@ sub cnaseq_hmm_file {
 sub has_microarray_build {
   my $self = shift;
   my $base_model;
-  if($self->exome_model) {
+  if ($self->exome_model) {
       $base_model = $self->exome_model;
-  } elsif($self->wgs_model) {
+  } elsif ($self->wgs_model) {
       $base_model = $self->wgs_model;
   } else {
       return 0;
   }
-  if($base_model->tumor_model->genotype_microarray && $base_model->normal_model->genotype_microarray) {
+  if ($base_model->class eq 'Genome::Model::SomaticValidation') { return 0; }
+  if ($base_model->tumor_model->genotype_microarray && $base_model->normal_model->genotype_microarray) {
     if($base_model->tumor_model->genotype_microarray->last_succeeded_build && $base_model->normal_model->genotype_microarray->last_succeeded_build) {
       return 1;
     } else {
