@@ -87,59 +87,6 @@ sub __errors__ {
   return @errors;
 }
 
-sub get_tumor_normal_refalign_models {
-  my $self = shift;
-  my $tumor_refalign;
-  my $normal_refalign;
-  if($self->tumor_refalign and $self->normal_refalign) {
-    $tumor_refalign = $self->tumor_refalign;
-    $normal_refalign = $self->normal_refalign;
-  } elsif($self->clinseq_model) {
-    my $base_model;
-    if($self->clinseq_model->exome_model) {
-      $base_model = $self->clinseq_model->exome_model;
-    } else {
-      die $self->error_message("Please specify a clinseq model with an exome-sv model");
-    }
-    if($base_model->tumor_model && $base_model->normal_model) {
-      $tumor_refalign = $base_model->tumor_model;
-      $normal_refalign = $base_model->normal_model;
-    } else {
-      die $self->error_message("Please specify a clinseq model with an exome-sv model with refalign builds");
-    }
-  } else {
-    die $self->error_message("Please specify one clinseq model [or] two ref-align models as input!");
-  }
-  return $tumor_refalign, $normal_refalign;
-}
-
-sub get_refalign_bam {
-  my $self = shift;
-  my $refalign = shift;
-  if($refalign->last_succeeded_build->whole_rmdup_bam_file) {
-    return $refalign->last_succeeded_build->whole_rmdup_bam_file;
-  } else {
-    die $self->error_message("Unable to find alignment file for " . $refalign->name);
-  }
-}
-
-sub get_ROI_bed{
-  my $self = shift;
-  my $refalign = shift;
-
-  if($self->roi_bed) {
-    return $self->roi_bed;
-  }
-
-  my $bed_path = Genome::Sys->create_temp_file_path();
-  my $roi_bed_file = $refalign->last_succeeded_build->region_of_interest_set_bed_file($bed_path);
-  if ($roi_bed_file) {
-    return $roi_bed_file;
-  }
-
-  die $self->error_message("Unable to find ROI_set_bed file for " . $refalign->name);
-}
-
 sub call_cnmops {
   my $self = shift;
   my $tumor_bam = shift;
@@ -214,31 +161,96 @@ sub intersect_bed {
   Genome::Sys->shellcmd(cmd => "$bedtools intersect -a $bed_a -b $bed_b > $bed_intersect");
 }
 
-sub get_ROI {
-  my $self = shift;
-  my $tumor_refalign = shift;
-  my $normal_refalign = shift;
-  my $tumor_ROI_bed = $self->get_ROI_bed($tumor_refalign);
-  my $normal_ROI_bed = $self->get_ROI_bed($normal_refalign);
-  my $intersected_bed = $self->outdir . "/tumor.normal.ROI.intersect.bed";
-  $self->intersect_bed($tumor_ROI_bed, $normal_ROI_bed, $intersected_bed);
-  return $intersected_bed;
-}
-
 sub execute {
   my $self = shift;
-  my $normal_refalign;
-  my $tumor_refalign;
-  ($tumor_refalign, $normal_refalign) = $self->get_tumor_normal_refalign_models();
-  my $tumor_bam = $self->get_refalign_bam($tumor_refalign);
-  my $normal_bam = $self->get_refalign_bam($normal_refalign);
-  my $ROI_bed = $self->get_ROI($tumor_refalign, $normal_refalign);
-  $self->call_cnmops($tumor_bam, $normal_bam, $ROI_bed);
+  
+  my $tumor_bam = $self->_resolve_bam_file_for_type('tumor');
+  my $normal_bam = $self->_resolve_bam_file_for_type('normal');
+  my $roi_bed = $self->_resolve_roi_bed_file();
+
+  $self->call_cnmops($tumor_bam, $normal_bam, $roi_bed);
   $self->status_message("\nCnmops tumor, normal bams are $tumor_bam , $normal_bam");
-  $self->status_message("\nROI bed is $ROI_bed");
+  $self->status_message("\nROI bed is $roi_bed");
   $self->plot_cnvs();
   $self->annotate_cnvs();
   return 1;
+}
+
+sub _resolve_bam_file_for_type {
+    my $self = shift;
+    my $type = shift;
+
+    my $refalign_accessor = $type .'_refalign';
+    if ($self->$refalign_accessor) {
+        return $self->_resolve_refalign_bam($self->$refalign_accessor);
+    } elsif ($self->clinseq_model && $self->clinseq_model->exome_model) {
+        my $exome_model = $self->clinseq_model->exome_model;
+        my $bam_accessor = $type .'_bam';
+        return $exome_model->last_succeeded_build->$bam_accessor;
+    } else {
+        $self->fatal_message('Failed to find an appropriate model to resolve BAM file path!');
+    }
+    return 0;
+}
+
+sub _resolve_refalign_bam {
+    my $self = shift;
+    my $refalign = shift;
+
+    if ($refalign->last_succeeded_build->whole_rmdup_bam_file) {
+        return $refalign->last_succeeded_build->whole_rmdup_bam_file;
+    } else {
+        die $self->error_message("Unable to find alignment file for " . $refalign->name);
+    }
+}
+
+sub _resolve_roi_bed_file_for_refalign {
+  my $self = shift;
+  my $refalign = shift;
+
+  my $bed_path = Genome::Sys->create_temp_file_path();
+  my $roi_bed_file = $refalign->last_succeeded_build->region_of_interest_set_bed_file($bed_path);
+  if ($roi_bed_file) {
+    return $roi_bed_file;
+  }
+
+  die $self->error_message("Unable to find ROI_set_bed file for " . $refalign->name);
+}
+
+sub _resolve_roi_bed_file {
+  my $self = shift;
+
+  if ($self->roi_bed) {
+    return $self->roi_bed;
+  }
+
+  my $tumor_roi_bed;
+  my $normal_roi_bed;
+  if ($self->clinseq_model && $self->clinseq_model->exome_model) {
+      my $exome_model = $self->clinseq_model->exome_model;
+      if ($exome_model->class eq 'Genome::Model::SomaticValidation') {
+          # Dump Tumor BED
+          $tumor_roi_bed = Genome::Sys->create_temp_file_path();
+          $exome_model->last_succeeded_build->coverage_stats_result->dump_bed_file($tumor_roi_bed);
+
+          # Dump Normal BED
+          $normal_roi_bed = Genome::Sys->create_temp_file_path();
+          $exome_model->last_succeeded_build->control_coverage_stats_result->dump_bed_file($normal_roi_bed);
+      } elsif ($exome_model->class eq 'Genome::Model::SomaticVariation') {
+          $tumor_roi_bed = $self->_resolve_roi_bed_file_for_refalign($exome_model->tumor_model);
+          $normal_roi_bed = $self->_resolve_roi_bed_file_for_refalign($exome_model->normal_model);
+      }
+  } else {
+      if ($self->tumor_refalign) {
+          $tumor_roi_bed = $self->_resolve_roi_bed_file_for_refalign($self->tumor_refalign);
+      }
+      if ($self->normal_refalign) {
+          $normal_roi_bed = $self->_resolve_roi_bed_file_for_refalign($self->normal_refalign);
+      }
+  }
+  my $intersected_bed = $self->outdir . "/tumor.normal.ROI.intersect.bed";
+  $self->intersect_bed($tumor_roi_bed, $normal_roi_bed, $intersected_bed);
+  return $intersected_bed;
 }
 
 1;
