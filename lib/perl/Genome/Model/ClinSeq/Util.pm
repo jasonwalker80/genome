@@ -1449,19 +1449,19 @@ sub _is_copycat_somvar {
     }
 }
 
-sub get_best_somvar_build {
+sub get_best_somatic_build {
     my $self = shift;
     my $clinseq_build = shift;
-    my $somvar_build =
-        $clinseq_build->wgs_build;
-    unless($somvar_build) {
-        $somvar_build = $clinseq_build->exome_build;
-        $self->status_message("Using exome somvvar build.");
+
+    my $somatic_build = $clinseq_build->wgs_build;
+    unless ($somatic_build) {
+        $somatic_build = $clinseq_build->exome_build;
+        $self->status_message("Using exome somatic build.");
     } else {
-        $self->status_message("Using WGS somvvar build.");
+        $self->status_message("Using WGS somatic build.");
     }
-    unless($somvar_build) {
-        die $self->error_message("Unable to find exome or wgs somvar build for clinseq model"); 
+    unless ($somatic_build) {
+        die $self->error_message("Unable to find exome or wgs somatic build for clinseq model"); 
     }
 }
 

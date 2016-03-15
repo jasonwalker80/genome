@@ -25,9 +25,8 @@ ok(-e $expected_output_dir, "Found test dir: $expected_output_dir") or die;
 my $temp_dir = Genome::Sys->create_temp_directory();
 ok($temp_dir, "created temp directory: $temp_dir") or die;
 
-#Run IdentifyLoh on the 'apipe-test-clinseq-wer' model
-my $clinseq_build =
-Genome::Model::Build->get(id => '35af836fbcd243c59c44825af7e3983b');
+#Run IdentifyLoh on the 'apipe-test-clinseq-wer' ClinSeq model
+my $clinseq_build = Genome::Model::Build->get(id => '35af836fbcd243c59c44825af7e3983b');
 ok($clinseq_build, "Found clinseq build.");
 my $run_iloh = Genome::Model::ClinSeq::Command::IdentifyLoh->create(
     outdir => $temp_dir,
@@ -39,25 +38,61 @@ $run_iloh->queue_status_messages(1);
 $run_iloh->execute();
 
 #Dump the output to a log file
-my @output1 = $run_iloh->status_messages();
-my $log_file = $temp_dir . "/IdentifyLoh.log.txt";
-my $log = IO::File->new(">$log_file");
-$log->print(join("\n", @output1));
-$log->close();
-ok(-e $log_file, "Wrote message file from identify-loh to a log
-    file: $log_file");
+&dump_output_to_log($run_iloh,$temp_dir);
 
 #Check for diffs
-my @diff = `diff -r -x '*.log.txt' -x '*png' -x '*R' -x '*cbs*' -x '*seg' -x '*.err' -x '*.out' $expected_output_dir $temp_dir`;
-ok(@diff == 0, "Found only expected number of differences between expected
-    results and test results")
-    or do {
-    diag("expected: $expected_output_dir\nactual: $temp_dir\n");
-    diag("differences are:");
-    diag(@diff);
-    my $diff_line_count = scalar(@diff);
-    Genome::Sys->shellcmd(cmd => "rm -fr /tmp/last-run-identifyloh/");
-    Genome::Sys->shellcmd(cmd => "mv $temp_dir /tmp/last-run-identifyloh");
-    die print "\n\nFound $diff_line_count differing lines\n\n";
-};
+&check_for_diffs($expected_output_dir,$temp_dir);
+
+#Exome SomVal build ID : '51ac2b7098a842808d28b038a1656a18',
+#Run IdnetifyLoh on the WGS SomVal build
+my $somval_build = Genome::Model::Build::SomaticValidation->get('d6485d25ff59444a915f874283f06f1b');  
+
+my $somval_iloh = Genome::Model::ClinSeq::Command::IdentifyLoh->create(
+   outdir => $temp_dir,
+   somatic_build => $somval_build,
+   bamrc_version => 0.6,
+   test => 1,
+);
+$somval_iloh->queue_status_messages(1);
+$somval_iloh->execute();
+
+#Dump the output to a log file
+&dump_output_to_log($somval_iloh,$temp_dir);
+
+#Check for diffs
+&check_for_diffs($expected_output_dir,$temp_dir);
+     
 done_testing();
+
+
+sub dump_output_to_log {
+    my $command = shift;
+    my $temp_dir = shift;
+
+    my @output = $command->status_messages();
+    my $log_file = $temp_dir . "/IdentifyLoh.log.txt";
+    my $log = IO::File->new(">$log_file");
+    $log->print(join("\n", @output));
+    $log->close();
+    ok(-e $log_file, "Wrote message file from identify-loh to a log file: $log_file");
+    return 1;
+}
+
+sub check_for_diffs {
+    my $expected_output_dir = shift;
+    my $temp_dir = shift;
+
+    my @diff = `diff -r -x '*.log.txt' -x '*png' -x '*R' -x '*cbs*' -x '*seg' -x '*.err' -x '*.out' $expected_output_dir $temp_dir`;
+    ok(@diff == 0, "Found only expected number of differences between expected
+             results and test results")
+             or do {
+             diag("expected: $expected_output_dir\nactual: $temp_dir\n");
+             diag("differences are:");
+             diag(@diff);
+             my $diff_line_count = scalar(@diff);
+             Genome::Sys->shellcmd(cmd => "rm -fr /tmp/last-run-identifyloh/");
+             Genome::Sys->shellcmd(cmd => "mv $temp_dir /tmp/last-run-identifyloh");
+             die print "\n\nFound $diff_line_count differing lines\n\n";
+             };
+    return 1;
+}   

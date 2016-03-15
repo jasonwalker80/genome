@@ -20,9 +20,9 @@ class Genome::Model::ClinSeq::Command::IdentifyLoh {
         is => 'FilesystemPath',
         doc => 'Directory where output files will be written.',
     },
-    somvar_build => {
-        is => 'Genome::Model::Build::SomaticVariation',
-        doc => 'SomVar build to identify LOH regions in.
+    somatic_build => {
+        is => 'Genome::Model::Build',
+        doc => 'Somatic build to identify LOH regions in.
         [Either this or a clinseq build is required.]',
         is_optional => 1,
     },
@@ -60,7 +60,7 @@ genome model clin-seq identify-loh\\
     --bamrc-version=0.7
 genome model clin-seq identify-loh\\
     --outdir=/tmp/test/ \\
-    --somvar-build='9dc0385a1b634c9bb85eb2017b3a0c73' \\
+    --somatic-build='9dc0385a1b634c9bb85eb2017b3a0c73' \\
     --bamrc-version=0.7
 EOS
 }
@@ -95,19 +95,19 @@ sub __errors__ {
     return @errors;
 }
 
-#Get a somatic-variation build from input or from clinseq-build
-sub resolve_somvar {
+#Get a somatic build from input or from clinseq-build
+sub resolve_somatic {
     my $self = shift;
-    my $somvar_build = $self->somvar_build;
-    unless($somvar_build) {
+    my $somatic_build = $self->somatic_build;
+    unless ($somatic_build) {
         my $clinseq_build = $self->clinseq_build;
-        unless($clinseq_build) {
-            die $self->error_message("Please pass a somatic-variation
+        unless ($clinseq_build) {
+            die $self->error_message("Please pass a somatic
                 or clinseq build as input.");
         }
-        $somvar_build = $self->get_best_somvar_build($clinseq_build);
+        $somatic_build = $self->get_best_somatic_build($clinseq_build);
     }
-    return $somvar_build;
+    return $somatic_build;
 }
 
 #Take Varscan SNVs and split into per-chromosome calls.
@@ -126,12 +126,12 @@ sub split_snvs {
     return;
 }
 
-#Get Varscan SNVs from somatic-variation
+#Get Varscan SNVs from somatic
 sub get_varscan_snvs {
     my $self = shift;
-    my $somvar_build = shift;
+    my $somatic_build = shift;
     my $snv_prefix = shift;
-    my $dd = $somvar_build->data_directory;
+    my $dd = $somatic_build->data_directory;
     my @varscan_snvs =
     glob(File::Spec->join($dd, "variants/snv/varscan-somatic-*/snvs.hq.unfiltered"));
     unless(scalar @varscan_snvs) {
@@ -145,11 +145,9 @@ sub get_varscan_snvs {
 #Get tumor/normal BAMs from somatic-variation
 sub get_tumor_normal_bam {
     my $self = shift;
-    my $somvar_build = shift;
-    my $tumor_bam = $somvar_build->tumor_build->
-        whole_rmdup_bam_file;
-    my $normal_bam = $somvar_build->normal_build->
-        whole_rmdup_bam_file;
+    my $somatic_build = shift;
+    my $tumor_bam = $somatic_build->tumor_bam;
+    my $normal_bam = $somatic_build->normal_bam;
     unless (-e $tumor_bam and -e $normal_bam) {
         die $self->error_message("tumor_bam $tumor_bam or normal_bam " .
             "$normal_bam does not exist.");
@@ -158,14 +156,15 @@ sub get_tumor_normal_bam {
 }
 
 #Get the reference-sequence build from the
-# ref-align builds used in somatic-variation
+# ref-align builds used in somatic-variation or the somatic-validation build directly
 sub reference_build {
     my $self = shift;
-    my $somvar_build = shift;
-    my $normal_refalign_build = $somvar_build->normal_build if ($somvar_build);
-    my $tumor_refalign_build = $somvar_build->tumor_build if ($somvar_build);
-    my @input_builds = ($normal_refalign_build,
-        $tumor_refalign_build, $somvar_build);
+    my $somatic_build = shift;
+
+    my $normal_refalign_build = $somatic_build->normal_build if $somatic_build->can('normal_build');
+    my $tumor_refalign_build = $somatic_build->tumor_build if $somatic_build->can('tumor_build');
+
+    my @input_builds = ($normal_refalign_build,$tumor_refalign_build, $somatic_build);
     for my $build (@input_builds){
         next unless $build;
         my $m = $build->model;
@@ -173,16 +172,18 @@ sub reference_build {
             return $m->reference_sequence_build;
         }
     }
+    return;
 }
 
 #Filter out putative false-positive SNVs
 sub filter_snvs {
     my $self = shift;
-    my $somvar_build = shift;
+    my $somatic_build = shift;
     my $snv_prefix = shift;
-    my ($tumor_bam, $normal_bam) =
-    $self->get_tumor_normal_bam($somvar_build);
-    my $refbuild = $self->reference_build($somvar_build);
+    
+    my ($tumor_bam, $normal_bam) = $self->get_tumor_normal_bam($somatic_build);
+
+    my $refbuild = $self->reference_build($somatic_build);
     my $ref_fa = $refbuild->full_consensus_path('fa');
     my $filter = Genome::Model::Tools::Varscan::SomaticFilterWorkflow->
     create(
@@ -200,6 +201,7 @@ sub filter_snvs {
 sub combine_sort_snvs {
     my $self = shift;
     my $snv_prefix = shift;
+    
     my $snv_combined = $snv_prefix . ".filtered";
     my $snv_combined_sorted = $snv_prefix . ".filtered.sorted";
     my @germline = glob $snv_prefix . "*.formatted.LOH.hc.filtered";
@@ -269,12 +271,12 @@ sub cleanup {
 #Get, Filter, Combine, Segment, Filter, Cleanup
 sub execute {
     my $self = shift;
-    my $somvar_build = $self->resolve_somvar;
+    my $somatic_build = $self->resolve_somatic;
     my $snv_prefix = File::Spec->join(
         $self->outdir,
         "snvs");
-    $self->get_varscan_snvs($somvar_build, $snv_prefix);
-    $self->filter_snvs($somvar_build, $snv_prefix);
+    $self->get_varscan_snvs($somatic_build, $snv_prefix);
+    $self->filter_snvs($somatic_build, $snv_prefix);
     my $combined_sorted = $self->combine_sort_snvs($snv_prefix);
     my $loh_basename = File::Spec->join(
         $self->outdir,
