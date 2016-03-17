@@ -452,9 +452,11 @@ sub map_workflow_inputs {
     }
 
     #AnnotateGenesByCategory
-    push @inputs, 'gene_name_columns' => ['mapped_gene_name'];
-    push @inputs, 'gene_name_regex' => 'mapped_gene_name';
-
+    #push @inputs, 'gene_name_columns' => ['mapped_gene_name'];
+    #push @inputs, 'gene_name_regex' => 'mapped_gene_name';
+    push @inputs, 'gene_name_columns' => ['default_gene_name'];
+    push @inputs, 'gene_name_regex' => 'default_gene_name';
+  
     #MakeCircosPlot
     if ($wgs_build){
       my $circos_dir = $patient_dir . "/circos";
@@ -531,11 +533,12 @@ sub _resolve_workflow_for_build {
   my @output_properties = qw(
       summarize_builds_result
       igv_session_result
+      gene_category_snv_indel_result
+      dgidb_snv_indel_result
   );
 
   if ($build->wgs_build) {
       push @output_properties, qw(
-          summarize_wgs_tier1_snv_support_result
           summarize_svs_result
           summarize_cnvs_result
           clonality_result
@@ -543,12 +546,8 @@ sub _resolve_workflow_for_build {
           gene_category_cnv_amp_result
           gene_category_cnv_del_result
           gene_category_cnv_ampdel_result
-          gene_category_wgs_snv_result
-          gene_category_wgs_indel_result
           dgidb_cnv_amp_result
           dgidb_sv_fusion_result
-          dgidb_wgs_snv_result
-          dgidb_wgs_indel_result
           wgs_variant_sources_result
           circos_result
       );
@@ -556,26 +555,12 @@ sub _resolve_workflow_for_build {
 
   if ($build->exome_build) {
       push @output_properties, qw(
-          summarize_exome_tier1_snv_support_result
-          gene_category_exome_snv_result
-          gene_category_exome_indel_result
-          dgidb_exome_snv_result
-          dgidb_exome_indel_result
           exome_variant_sources_result
       );
   }
 
-  if ($build->wgs_build and $build->exome_build) {
-      push @output_properties, 'summarize_wgs_exome_tier1_snv_support_result';
-      push @output_properties, 'gene_category_wgs_exome_indel_result';
-      push @output_properties, 'gene_category_wgs_exome_snv_result';
-      push @output_properties, 'dgidb_wgs_exome_indel_result';
-      push @output_properties, 'dgidb_wgs_exome_snv_result';
-  }
-
   if ($build->wgs_build or $build->exome_build) {
     push @output_properties, 'mutation_diagram_result';
-    push @output_properties, 'import_snvs_indels_result';
     push @output_properties, 'loh_result';
     my $iterator = List::MoreUtils::each_arrayref([1..@$mqs], $mqs, $bqs);
     while(my ($i, $mq, $bq) = $iterator->()) {
@@ -801,22 +786,6 @@ sub _resolve_workflow_for_build {
   $add_link->($input_connector, 'summarize_builds_log_file', $summarize_builds_op, 'log_file');
   $add_link->($summarize_builds_op, 'result', $output_connector, 'summarize_builds_result');
 
-  #ImportSnvsIndels - Import SNVs and Indels
-  my $import_snvs_indels_op;
-  if ($build->wgs_build or $build->exome_build){
-    my $msg = "Importing SNVs and Indels from somatic results, parsing, and merging exome/wgs if possible";
-    $import_snvs_indels_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::ImportSnvsIndels");
-    $add_link->($input_connector, 'import_snvs_indels_outdir', $import_snvs_indels_op, 'outdir');
-    $add_link->($input_connector, 'import_snvs_indels_filter_mt', $import_snvs_indels_op, 'filter_mt');
-    if ($build->wgs_build){
-      $add_link->($input_connector, 'wgs_build', $import_snvs_indels_op, 'wgs_build');
-    }
-    if ($build->exome_build){
-      $add_link->($input_connector, 'exome_build', $import_snvs_indels_op, 'exome_build');
-    }
-    $add_link->($import_snvs_indels_op, 'result', $output_connector, 'import_snvs_indels_result');
-  }
-
   #GetVariantSources - Determine source variant caller for SNVs and InDels for wgs data
   my $wgs_variant_sources_op;
   if ($build->wgs_build) {
@@ -1021,55 +990,54 @@ sub _resolve_workflow_for_build {
     $add_link->($summarize_svs_op, 'result', $output_connector, 'summarize_svs_result');
   }
 
+  #Converge SnvIndelReport
+  # The last mq and bq filter will be the one used for downstream steps ex. $converge_snv_indel_report_ops[-1]
+  
+  my $converge_snv_indel_report_op1;
+  my @converge_snv_indel_report_ops;
+  if ($build->wgs_build || $build->exome_build) {
+    #Create a report for each $bq $mq combo.
+    my $iterator = List::MoreUtils::each_arrayref([1..@$mqs], $mqs, $bqs);
+    while(my ($i, $mq, $bq) = $iterator->()) {
+        $msg = "Generate SnvIndel Report" . $i . ".";
+        $converge_snv_indel_report_op1 = $add_step->($msg, "Genome::Model::ClinSeq::Command::Converge::SnvIndelReport");
+        $add_link->($input_connector, 'build', $converge_snv_indel_report_op1, 'builds');
+        $add_link->($input_connector, 'bam_readcount_version', $converge_snv_indel_report_op1, 'bam_readcount_version');
+        $add_link->($input_connector, 'snv_indel_report_dir' . $i, $converge_snv_indel_report_op1, 'outdir');
+        $add_link->($input_connector, 'snv_indel_report_clean', $converge_snv_indel_report_op1, 'clean');
+        $add_link->($input_connector, 'snv_indel_report_tmp_space', $converge_snv_indel_report_op1, 'tmp_space');
+        $add_link->($input_connector, 'annotation_build', $converge_snv_indel_report_op1, 'annotation_build');
+        $add_link->($input_connector, 'snv_indel_report_target_gene_list', $converge_snv_indel_report_op1, 'target_gene_list');
+        $add_link->($input_connector, 'snv_indel_report_target_gene_list_name', $converge_snv_indel_report_op1, 'target_gene_list_name');
+        $add_link->($input_connector, 'sireport_min_tumor_vaf', $converge_snv_indel_report_op1, 'min_tumor_vaf');
+        $add_link->($input_connector, 'sireport_max_normal_vaf', $converge_snv_indel_report_op1, 'max_normal_vaf');
+        $add_link->($input_connector, 'sireport_min_coverage', $converge_snv_indel_report_op1, 'min_coverage');
+        $add_link->($input_connector, 'sireport_min_bq' . $i, $converge_snv_indel_report_op1, 'bq');
+        $add_link->($input_connector, 'sireport_min_mq' . $i, $converge_snv_indel_report_op1, 'mq');
+        if ($build->wgs_build){
+            $add_link->($wgs_variant_sources_op, 'snv_variant_sources_file', $converge_snv_indel_report_op1, '_wgs_snv_variant_sources_file');
+            $add_link->($wgs_variant_sources_op, 'indel_variant_sources_file', $converge_snv_indel_report_op1, '_wgs_indel_variant_sources_file');
+        }
+        if ($build->exome_build){
+            $add_link->($exome_variant_sources_op, 'snv_variant_sources_file', $converge_snv_indel_report_op1, '_exome_snv_variant_sources_file');
+            $add_link->($exome_variant_sources_op, 'indel_variant_sources_file', $converge_snv_indel_report_op1, '_exome_indel_variant_sources_file');
+        }
+        #If this is a build of a test model, perform a faster analysis (e.g. apipe-test-clinseq-wer)
+        if ($self->name =~ /^apipe\-test/){
+          $add_link->($input_connector, 'snv_indel_report_tiers', $converge_snv_indel_report_op1, 'tiers');
+        }
+        $add_link->($converge_snv_indel_report_op1, 'result', $output_connector, 'converge_snv_indel_report_result' . $i);
+        push @converge_snv_indel_report_ops, $converge_snv_indel_report_op1;
+    }
+  }
+  
   #Add gene category annotations to some output files from steps above. (e.g. determine which SNV affected genes are kinases, ion channels, etc.)
-  #AnnotateGenesByCategory - gene_category_exome_snv_result
-  if ($build->exome_build){
-    my $msg = "Add gene category annotations to SNVs identified by exome";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'exome_snv_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_exome_snv_result');
-  }
-  #AnnotateGenesByCategory - gene_category_wgs_snv_result
-  if ($build->wgs_build){
-    my $msg = "Add gene category annotations to SNVs identified by wgs";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'wgs_snv_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_wgs_snv_result');
-  }
-  #AnnotateGenesByCategory - gene_category_wgs_exome_snv_result
-  if ($build->wgs_build and $build->exome_build){
-    my $msg = "Add gene category annotations to SNVs identified by wgs OR exome";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'wgs_exome_snv_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_wgs_exome_snv_result');
-  }
-  #AnnotateGenesByCategory - gene_category_exome_indel_result
-  if ($build->exome_build){
-    my $msg = "Add gene category annotations to InDels identified by exome";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'exome_indel_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_exome_indel_result');
-  }
-  #AnnotateGenesByCategory - gene_category_wgs_indel_result
-  if ($build->wgs_build){
-    my $msg = "Add gene category annotations to InDels identified by wgs";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'wgs_indel_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_wgs_indel_result');
-  }
-  #AnnotateGenesByCategory - gene_category_wgs_exome_indel_result
-  if ($build->wgs_build and $build->exome_build){
-    my $msg = "Add gene category annotations to InDels identified by wgs OR exome";
-    my $annotate_genes_by_category_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
-    $add_link->($import_snvs_indels_op, 'wgs_exome_indel_file', $annotate_genes_by_category_op, 'infile');
-    $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
-    $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_wgs_exome_indel_result');
-  }
+  #AnnotateGenesByCategory - gene_category_snv_indel_result
+  my $annotate_genes_by_category_op = $add_step->('Add gene category annotations to snvs and indels', "Genome::Model::ClinSeq::Command::AnnotateGenesByCategory");
+  $add_link->($converge_snv_indel_report_ops[-1], 'final_filtered_coding_clean_tsv', $annotate_genes_by_category_op, 'infile');
+  $add_link->($input_connector, 'gene_name_columns', $annotate_genes_by_category_op, 'gene_name_columns');
+  $add_link->($annotate_genes_by_category_op, 'result', $output_connector, 'gene_category_snv_indel_result');
+  
   #AnnotateGenesByCategory - gene_category_cnv_amp_result
   if ($build->wgs_build){
     my $msg = "Add gene category annotations to CNV amp genes";
@@ -1136,58 +1104,16 @@ sub _resolve_workflow_for_build {
   }
 
   #DGIDB gene annotation
-  if ($build->exome_build){
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'exome_snv_file', $input_connector, $output_connector, 'dgidb_exome_snv_result');
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'exome_indel_file', $input_connector, $output_connector, 'dgidb_exome_indel_result');
-  }
+  $self->add_dgidb_op_to_flow($add_step, $add_link, $converge_snv_indel_report_ops[-1], 'final_filtered_coding_clean_tsv', $input_connector, $output_connector, 'dgidb_snv_indel_result');
 
   if ($build->wgs_build){
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'wgs_snv_file', $input_connector, $output_connector, 'dgidb_wgs_snv_result');
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'wgs_indel_file', $input_connector, $output_connector, 'dgidb_wgs_indel_result');
     $self->add_dgidb_op_to_flow($add_step, $add_link, $run_cn_view_op, 'gene_amp_file', $input_connector, $output_connector, 'dgidb_cnv_amp_result');
     $self->add_dgidb_op_to_flow($add_step, $add_link, $summarize_svs_op, 'fusion_output_file', $input_connector, $output_connector, 'dgidb_sv_fusion_result');
-  }
-
-  if ($build->wgs_build and $build->exome_build) {
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'wgs_exome_snv_file', $input_connector, $output_connector, 'dgidb_wgs_exome_snv_result');
-    $self->add_dgidb_op_to_flow($add_step, $add_link, $import_snvs_indels_op, 'wgs_exome_indel_file', $input_connector, $output_connector, 'dgidb_wgs_exome_indel_result');
   }
 
   if ($build->tumor_rnaseq_build){
     $self->add_dgidb_op_to_flow($add_step, $add_link, $tumor_cufflinks_expression_absolute_op, 'tumor_fpkm_topnpercent_file', $input_connector, $output_connector, 'dgidb_cufflinks_result');
     $self->add_dgidb_op_to_flow($add_step, $add_link, $tumor_tophat_junctions_absolute_op, 'junction_topnpercent_file', $input_connector, $output_connector, 'dgidb_tophat_result');
-  }
-
-  #SummarizeTier1SnvSupport - For each of the following: WGS SNVs, Exome SNVs, and WGS+Exome SNVs, do the following:
-  #Get BAM readcounts for WGS (tumor/normal), Exome (tumor/normal), RNAseq (tumor), RNAseq (normal) - as available of course
-  #TODO: Break this down to do direct calls to GetBamReadCounts instead of wrapping it.
-  my $summarize_tier1_snv_support_op;
-  for my $run (qw/wgs exome wgs_exome/) {
-    if ($run eq 'wgs' and not $build->wgs_build) {
-      next;
-    }
-    if ($run eq 'exome' and not $build->exome_build) {
-      next;
-    }
-    if ($run eq 'wgs_exome' and not ($build->wgs_build and $build->exome_build)) {
-      next;
-    }
-    my $txt_name = $run;
-    $txt_name =~ s/_/ plus /g;
-    $txt_name =~ s/wgs/WGS/;
-    $txt_name =~ s/exome/Exome/;
-    $msg = "$txt_name Summarize Tier 1 SNV Support (BAM read counts)";
-    $summarize_tier1_snv_support_op = $add_step->($msg, "Genome::Model::ClinSeq::Command::SummarizeTier1SnvSupport");
-    $add_link->($import_snvs_indels_op, $run . "_snv_file", $summarize_tier1_snv_support_op, $run . "_positions_file");
-    $add_link->($input_connector, 'wgs_build', $summarize_tier1_snv_support_op);
-    $add_link->($input_connector, 'exome_build', $summarize_tier1_snv_support_op);
-    $add_link->($input_connector, 'tumor_rnaseq_build', $summarize_tier1_snv_support_op);
-    $add_link->($input_connector, 'normal_rnaseq_build', $summarize_tier1_snv_support_op);
-    if ($build->tumor_rnaseq_build){
-      $add_link->($tumor_cufflinks_expression_absolute_op, 'tumor_fpkm_file', $summarize_tier1_snv_support_op);
-    }
-    $add_link->($input_connector, 'verbose', $summarize_tier1_snv_support_op);
-    $add_link->($summarize_tier1_snv_support_op, 'result', $output_connector, "summarize_${run}_tier1_snv_support_result");
   }
 
   #MakeCircosPlot - Creates a Circos plot to summarize the data using MakeCircosPlot.pm
@@ -1207,48 +1133,9 @@ sub _resolve_workflow_for_build {
           $add_link->($tumor_cufflinks_expression_absolute_op, 'tumor_fpkm_topnpercent_file', $make_circos_plot_op);
       }
     }
-    $add_link->($import_snvs_indels_op, 'result', $make_circos_plot_op, 'import_snvs_indels_result');
+    $add_link->($converge_snv_indel_report_ops[-1], 'final_filtered_coding_clean_tsv', $make_circos_plot_op, 'annotated_variants_tsv');
     $add_link->($run_cn_view_op, 'gene_ampdel_file', $make_circos_plot_op);
     $add_link->($make_circos_plot_op, 'result', $output_connector, 'circos_result');
-  }
-
-  #Converge SnvIndelReport
-  my $converge_snv_indel_report_op1;
-  my @converge_snv_indel_report_ops;
-  if ($build->wgs_build || $build->exome_build) {
-    #Create a report for each $bq $mq combo.
-    my $iterator = List::MoreUtils::each_arrayref([1..@$mqs], $mqs, $bqs);
-    while(my ($i, $mq, $bq) = $iterator->()) {
-        $msg = "Generate SnvIndel Report" . $i . ".";
-        $converge_snv_indel_report_op1 = $add_step->($msg, "Genome::Model::ClinSeq::Command::Converge::SnvIndelReport");
-        $add_link->($input_connector, 'build', $converge_snv_indel_report_op1, 'builds');
-        $add_link->($input_connector, 'bam_readcount_version', $converge_snv_indel_report_op1, 'bam_readcount_version');
-        $add_link->($input_connector, 'snv_indel_report_dir' . $i, $converge_snv_indel_report_op1, 'outdir');
-        $add_link->($input_connector, 'snv_indel_report_clean', $converge_snv_indel_report_op1, 'clean');
-        $add_link->($input_connector, 'snv_indel_report_tmp_space', $converge_snv_indel_report_op1, 'tmp_space');
-        $add_link->($input_connector, 'annotation_build', $converge_snv_indel_report_op1, 'annotation_build');
-        $add_link->($input_connector, 'snv_indel_report_target_gene_list', $converge_snv_indel_report_op1, 'target_gene_list');
-        $add_link->($input_connector, 'snv_indel_report_target_gene_list_name', $converge_snv_indel_report_op1, 'target_gene_list_name');
-        $add_link->($input_connector, 'sireport_min_tumor_vaf', $converge_snv_indel_report_op1, 'min_tumor_vaf');
-        $add_link->($input_connector, 'sireport_max_normal_vaf', $converge_snv_indel_report_op1, 'max_normal_vaf');
-        $add_link->($input_connector, 'sireport_min_coverage', $converge_snv_indel_report_op1, 'min_coverage');
-        $add_link->($input_connector, 'sireport_min_bq' . $i, $converge_snv_indel_report_op1, 'bq');
-        $add_link->($input_connector, 'sireport_min_mq' . $i, $converge_snv_indel_report_op1, 'mq');
-        if ($build->wgs_build){
-            $add_link->($wgs_variant_sources_op, 'snv_variant_sources_file', $converge_snv_indel_report_op1, '_wgs_snv_variant_sources_file');
-            $add_link->($wgs_variant_sources_op, 'indel_variant_sources_file', $converge_snv_indel_report_op1, '_wgs_indel_variant_sources_file');
-        }
-        if ($build->exome_build){
-            $add_link->($exome_variant_sources_op, 'snv_variant_sources_file', $converge_snv_indel_report_op1, '_exome_snv_variant_sources_file');
-            $add_link->($exome_variant_sources_op, 'indel_variant_sources_file', $converge_snv_indel_report_op1, '_exome_indel_variant_sources_file');
-        }
-        #If this is a build of a test model, perform a faster analysis (e.g. apipe-test-clinseq-wer)
-        if ($self->name =~ /^apipe\-test/){
-          $add_link->($input_connector, 'snv_indel_report_tiers', $converge_snv_indel_report_op1, 'tiers');
-        }
-        $add_link->($converge_snv_indel_report_op1, 'result', $output_connector, 'converge_snv_indel_report_result' . $i);
-        push @converge_snv_indel_report_ops, $converge_snv_indel_report_op1;
-    }
   }
 
   #CreateMutationDiagrams - Create mutation spectrum results for wgs data

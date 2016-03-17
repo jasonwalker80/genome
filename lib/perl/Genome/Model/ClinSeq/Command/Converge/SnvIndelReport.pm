@@ -138,6 +138,12 @@ class Genome::Model::ClinSeq::Command::Converge::SnvIndelReport {
             value => q{-R 'select[mem>12000] rusage[mem=12000]' -M 12000000},
         },
     ],
+    has_output => [
+        final_filtered_coding_clean_tsv => {
+            is => 'Text',
+            doc => 'The final tier1 output variants file used by downstream clin-seq pipeline steps.',
+        },
+    ],
     doc => 'converge SNV and InDels from multiple clin-seq builds, annotate, bam-readcount, etc. and summarize into a single spreadsheet',
 };
 
@@ -356,7 +362,8 @@ sub execute {
     );
     $summarize->execute();
   }
-
+  # Set the path to the final output file used as a workflow link to downstream steps
+  $self->final_filtered_coding_clean_tsv($result_files->{final_filtered_coding_clean_tsv});
   return 1;
 };
 
