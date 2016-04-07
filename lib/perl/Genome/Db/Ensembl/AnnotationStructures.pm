@@ -78,9 +78,12 @@ sub create
     $self->status_message('Create AnnotationStructures');
     my $data_set = $self->data_set;
     $self->prepare_for_execution;
-
     my $registry = $self->connect_registry;
+
+    $self->config_ensembl_species_alias;
+
     my $db_connection = $self->get_db_connection($registry);
+
     my $ucfirst_species = ucfirst $self->species;
     my $gene_adaptor = $registry->get_adaptor( $ucfirst_species, $data_set, 'Gene' );
     my $transcript_adaptor = $registry->get_adaptor( $ucfirst_species, $data_set, 'Transcript' );
@@ -235,32 +238,39 @@ sub create
 
                     $egi_id++;
                 }
-                my $external_gene_id = Genome::ExternalGeneId->create(
-                    egi_id => $egi_id,
-                    gene_id => $gene->id,
-                    id_type => "ensembl_default_external_name",
-                    id_value => $ensembl_gene->external_name,
-                    data_directory => $self->temp_staging_directory,
-                    species => $species,
-                    source => $source,
-                    version => $version,
-                    reference_build_id => $self->reference_build->id,
-                );
+                if  ($ensembl_gene->external_name) {
+                    my $external_gene_id = Genome::ExternalGeneId->create(
+                        egi_id => $egi_id,
+                        gene_id => $gene->id,
+                        id_type => "ensembl_default_external_name",
+                        id_value => $ensembl_gene->external_name,
+                        data_directory => $self->temp_staging_directory,
+                        species => $species,
+                        source => $source,
+                        version => $version,
+                        reference_build_id => $self->reference_build->id,
+                    );
+                    $egi_id++;
+                } else {
+                    $self->status_message("Skipping ensembl_default_external_name for %s",$gene->id);
+                }
 
-                $egi_id++;
-                $external_gene_id = Genome::ExternalGeneId->create(
-                    egi_id => $egi_id,
-                    gene_id => $gene->id,
-                    id_type => "ensembl_default_external_name_db",
-                    id_value => $ensembl_gene->external_db,
-                    data_directory => $self->temp_staging_directory,
-                    species => $species,
-                    source => $source,
-                    version => $version,
-                    reference_build_id => $self->reference_build->id,
-                );
-
-                $egi_id++;
+                if ($ensembl_gene->external_db) {
+                    my $external_gene_id = Genome::ExternalGeneId->create(
+                        egi_id => $egi_id,
+                        gene_id => $gene->id,
+                        id_type => "ensembl_default_external_name_db",
+                        id_value => $ensembl_gene->external_db,
+                        data_directory => $self->temp_staging_directory,
+                        species => $species,
+                        source => $source,
+                        version => $version,
+                        reference_build_id => $self->reference_build->id,
+                    );
+                    $egi_id++;
+                } else {
+                    $self->status_message("Skipping ensembl_default_external_name_db for %s",$gene->id);
+                }
             }
 
             #Transcript cols: transcript_id gene_id transcript_start transcript_stop transcript_name source transcript_status strand chrom_name
@@ -1128,6 +1138,22 @@ sub dump_sub_structures {
     $dump_fh->print(Dumper \%hash);
     $dump_fh->print("substructure samples:\n".Dumper \@ss_sample);
     $dump_fh->print("\n#########################################\n#######################################\n\n");
+}
+
+sub config_ensembl_species_alias {
+    my $self = shift;
+
+    my %aliases = (
+        'homo_sapiens' => ['Human', 'human'],
+        'mus_musculus' => ['Mouse', 'mouse'],
+    );
+    for my $ens_species (keys %aliases) {
+        Bio::EnsEMBL::Utils::ConfigRegistry->add_alias(
+            -species => $ens_species,
+            -alias => $aliases{$ens_species},
+        );
+    }
+    return 1;
 }
 
 1;
