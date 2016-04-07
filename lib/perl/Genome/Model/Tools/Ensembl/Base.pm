@@ -59,15 +59,15 @@ sub default_version {
 }
 
 sub default_hostname {
-    return $DEFAULT_HOSTNAME;
+    return Genome::Config::get('db_ensembl_host') ne '' ? Genome::Config::get('db_ensembl_host') : $DEFAULT_HOSTNAME;
 }
 
 sub default_username {
-    return $DEFAULT_USERNAME;
+    return Genome::Config::get('db_ensembl_user') ne '' ? Genome::Config::get('db_ensembl_user') : $DEFAULT_USERNAME;
 }
 
 sub default_password {
-    return $DEFAULT_PASSWORD;
+    return Genome::Config::get('db_ensembl_pass') ne '' ? Genome::Config::get('db_ensembl_pass') : $DEFAULT_PASSWORD;
 }
 
 sub api_version {
@@ -118,6 +118,7 @@ sub load_registry {
             -db_version => $self->api_version
         );
         $self->_registry_loaded(1);
+        Genome::Db::Ensembl::AnnotationStructures::config_ensembl_species_alias();
     }
     return 1;
 }

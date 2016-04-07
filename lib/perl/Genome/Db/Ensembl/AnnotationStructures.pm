@@ -1141,7 +1141,7 @@ sub dump_sub_structures {
 }
 
 sub config_ensembl_species_alias {
-    my $self = shift;
+    my $class = shift;
 
     my %aliases = (
         'homo_sapiens' => ['Human', 'human'],
