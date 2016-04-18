@@ -204,6 +204,7 @@ sub get_or_create_ucsc_tiering_directory {
         '107494762' => '/gscmnt/sata921/info/medseq/make_tier_bed_files/NCBI-mouse-build37/mm9',
         '3ca0ea4786dd4ebebaf3935f3d3ccab8' => '/gscmnt/sata921/info/medseq/make_tier_bed_files/NCBI-mouse-build38/mm10',
         '4ec1c5bd1f6941b8a99f2e230217cb91' => '/gscmnt/gc13001/info/model_data/jwalker_scratch/GRCh38',
+        '0b5a8d3795254ae9bd6fa80420656257' => '/gscmnt/gc13001/info/model_data/jwalker_scratch/GRCm38',
     );
 
     if ($tiering_dirs{$self->id}) {
