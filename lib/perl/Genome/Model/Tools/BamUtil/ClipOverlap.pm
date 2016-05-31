@@ -49,7 +49,10 @@ sub execute {
     }
     my $command = $self->clipoverlap_creator_command;
 
-    unless (Genome::Sys->shellcmd(cmd => $command)) {
+    unless ( Genome::Sys->shellcmd(
+        cmd => $command,
+        allow_failed_exit_code => 1,
+    ) ) {
         die $self->error_message("Failed to execute $command");
     }
 
