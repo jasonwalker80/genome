@@ -51,7 +51,7 @@ sub execute {
 
     unless ( Genome::Sys->shellcmd(
         cmd => $command,
-        allow_failed_exit_code => 1,
+        allowed_exit_codes => [2],
     ) ) {
         die $self->error_message("Failed to execute $command");
     }

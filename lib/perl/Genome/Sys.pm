@@ -1481,6 +1481,7 @@ sub shellcmd {
     my $output_directories           = delete $params{output_directories};
     my $input_directories            = delete $params{input_directories};
     my $allow_failed_exit_code       = delete $params{allow_failed_exit_code};
+    my $allowed_exit_codes           = delete $params{allowed_exit_codes};
     my $allow_zero_size_output_files = delete $params{allow_zero_size_output_files};
     my $set_pipefail                 = delete $params{set_pipefail};
     my $allow_zero_size_input_files  = delete $params{allow_zero_size_input_files};
@@ -1500,6 +1501,12 @@ sub shellcmd {
 
         @cmdline = @$cmd;
         $cmd = join(' ', map $self->quote_for_shell($_), @cmdline);
+    }
+
+    if (defined($allowed_exit_codes)) {
+        unless (ref($allowed_exit_codes) and ref($allowed_exit_codes) eq 'ARRAY') {
+            Carp::confess 'Must provide array ref of values for allowed_exit_codes param to shellcmd!';
+        }
     }
 
     $set_pipefail = 1 if not defined $set_pipefail;
@@ -1648,13 +1655,26 @@ sub shellcmd {
             Carp::croak("COMMAND KILLED. Signal $signal, $withcore coredump: $cmd");
 
         } elsif ($child_exit_code != 0) {
+            my $allowed = 0;
             if ($child_exit_code == 141) {
                 my ($package, $filename, $line) = caller(0);
                 my $msg = "SIGPIPE was recieved by command but IGNORED! cmd: '$cmd' in $package at $filename line $line";
                 $self->error_message($msg);
+                $allowed = 1;
             } elsif ($allow_failed_exit_code) {
                 Carp::carp("TOLERATING Exit code $child_exit_code from: $cmd");
-            } else {
+                $allowed = 1;
+            } elsif ($allowed_exit_codes) {
+                my $found_allowed_exit_code;
+                for my $allowed_exit_code (@$allowed_exit_codes) {
+                    if ($allowed_exit_code == $child_exit_code) {
+                        Carp::carp("Explicitly allowing exit code $child_exit_code from: $cmd");
+                        $allowed = 1;
+                        last;
+                    }
+                }
+            }
+            unless ($allowed) {
                 Carp::croak("ERROR RUNNING COMMAND.  Exit code $child_exit_code from: $cmd\nSee the command's captured STDERR (if it exists) for more information");
             }
         }
