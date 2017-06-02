@@ -92,7 +92,13 @@ sub calculate_qc_metrics_for_build {
             my %result_metrics = $qc_result->get_unflattened_metrics;
             $result_metrics{build_id} = $build->id;
             $result_metrics{instrument_data_count} = $result_instdata_set->size;
+
+            my $read_count = 0;
+            map {$read_count += $_->read_count} $result_instdata_set->members;
+            $result_metrics{instrument_data_read_count} = $read_count;
+
             $result_metrics{instrument_data_ids} = join(',',sort map {$_->id} $result_instdata_set->members);
+
             if ($result_metrics{PAIR}) {
                 # Calculate Duplication Rate
                 if ( defined($result_metrics{reads_marked_duplicates}) ) {
@@ -153,6 +159,7 @@ sub output_metrics_as_tsv {
                        sample_name
                        build_id
                        instrument_data_count
+                       instrument_data_read_count
                        instrument_data_ids
                        bam_path
                        pf_reads
@@ -220,6 +227,7 @@ sub _base_hash_ref_for_qc_metric_result {
         sample_name => $build->model->subject->name,
         build_id => $qc_metric_result->{build_id},
         instrument_data_count => $qc_metric_result->{instrument_data_count},
+        instrument_data_read_count => $qc_metric_result->{instrument_data_read_count},
         instrument_data_ids => $qc_metric_result->{instrument_data_ids},
         bam_path => $build->merged_alignment_result->bam_path,
         pf_reads => $qc_metric_result->{PAIR}->{PF_READS},
